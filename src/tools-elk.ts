@@ -101,7 +101,10 @@ export function registerElkTools(server: McpServer, registry: ElkRegistry): void
           declared: {
             gamesession: redactSession(info.gamesession),
             betlevels: info.betlevels.length,
+            betModes: info.betModes,
+            featureBuys: info.betModes.filter((id) => id !== "DEF"),
             bmodes: info.bmodes.map((bmode) => `${bmode.id}=${bmode.display}`).join(" "),
+            variants: info.variants.map((v) => v.id),
             currency: info.currency,
             balance: info.balance,
           },
@@ -182,6 +185,10 @@ export function registerElkTools(server: McpServer, registry: ElkRegistry): void
         id: z.string().optional(),
         betlevel: z.number().int().min(1).max(64).optional(),
         bmode: z.string().optional().describe("DEF por defecto; X01..X05 para feature buy"),
+        variant: z
+          .string()
+          .optional()
+          .describe("Variante del juego si init declara <variants> (Pirots 4/5, Wild Toro 3, Huff N Puff Collectr); sin ella es errorcode=1"),
         settle: z.boolean().optional().describe("Cerrar con checkwin (default true)"),
         gamespeed: z.enum(["normal", "quick"]).optional(),
         pmode: z.string().optional(),
@@ -192,10 +199,10 @@ export function registerElkTools(server: McpServer, registry: ElkRegistry): void
           .describe("Atributos extra para purchase (avanzado)"),
       },
     },
-    async ({ id, betlevel, bmode, settle, gamespeed, pmode, extraDelayMs, extra }) => {
+    async ({ id, betlevel, bmode, variant, settle, gamespeed, pmode, extraDelayMs, extra }) => {
       try {
         const session = sessionOrThrow(registry, id);
-        const outcome = await session.spin({ betlevel, bmode, settle, gamespeed, pmode, extraDelayMs, extra });
+        const outcome = await session.spin({ betlevel, bmode, variant, settle, gamespeed, pmode, extraDelayMs, extra });
         return show(
           outcome.ok ? `Giro ${outcome.round?.index ?? "?"} OK` : `Giro fallido: ${outcome.error}`,
           {
@@ -224,16 +231,17 @@ export function registerElkTools(server: McpServer, registry: ElkRegistry): void
         spins: z.number().int().min(1).max(10000),
         betlevel: z.number().int().min(1).max(64).optional(),
         bmode: z.string().optional(),
+        variant: z.string().optional().describe("Variante para juegos multi-variante (ver elk_init)"),
         settle: z.boolean().optional().describe("checkwin por ronda (default true)"),
         extraDelayMs: z.number().int().min(0).max(60000).optional(),
         stopOnMismatch: z.boolean().optional().describe("Cortar si el saldo no cuadra (default true)"),
         stopOnError: z.boolean().optional().describe("Cortar ante el primer error (default true)"),
       },
     },
-    async ({ id, spins, betlevel, bmode, settle, extraDelayMs, stopOnMismatch, stopOnError }) => {
+    async ({ id, spins, betlevel, bmode, variant, settle, extraDelayMs, stopOnMismatch, stopOnError }) => {
       try {
         const session = sessionOrThrow(registry, id);
-        const result = await session.run({ spins, betlevel, bmode, settle, extraDelayMs, stopOnMismatch, stopOnError });
+        const result = await session.run({ spins, betlevel, bmode, variant, settle, extraDelayMs, stopOnMismatch, stopOnError });
         return show(`Run ${session.id}: ${result.completed}/${result.spins} giros`, {
           result,
           status: session.status(),

@@ -73,14 +73,14 @@ Content-Type: text/xml; charset=utf-8
 X-CAPI-VERSION: 2.0
 X-CAPI-RID: <epoch><rand>:1
 X-CLIENT-VERSION: <build del game.js>     # el servidor exige la cabecera, no un valor exacto
-X-ECF-VERSION: <build del shell ecf3>
+X-ECF-VERSION: <build del shell>          # ecf2 (juegos viejos) y ecf3 sirven el mismo build
 Origin/Referer: https://static-stage.contentmedia.eu
 ```
 
 | Op | Request | Para qué |
 | --- | --- | --- |
 | `init` | `opid`, `extsession`, `cur`, `desktopmode`, `lang`, `screenres`, `extjur` | Abre sesión y declara betlevels, bmodes, RTP, maxwin, features, `minspindelay` |
-| `purchase` | `gamesession`, `amount`, `cur`, `bmode`, `betdetails`, `betlevel`, `pmode`, `orientation`, `sound`, `monetaryunit`, `gamespeed` (+ `variant`) | **Giro normal** con `bmode=DEF`; **feature buy** con `X01..X05` |
+| `purchase` | `gamesession`, `amount`, `cur`, `betdetails`, `betlevel`, `pmode`, `orientation`, `sound`, `monetaryunit`, `gamespeed` (+ `bmode` y `variant` cuando el juego los declara) | **Giro normal** con `bmode=DEF`; **feature buy** con `X01..X05` |
 | `claim` | igual que `purchase` + `bmode` | Acepta una oferta/ronda pendiente |
 | `reject` | `gamesession`, `temporary` | Rechaza la oferta pendiente |
 | `checkwin` | `roundid`, `gamesession` | Cierra la ronda y confirma el saldo |
@@ -101,9 +101,40 @@ En Cluster Kingdom (`gameId 10222`, RTP 94 %) el init declara 12 betlevels y:
 | `X04` | 100x | feature buy |
 | `X05` | 500x | feature buy |
 
-Pirots 5 (`10266`, RTP 96 %) usa la misma estructura pero **`X05 = 250x`** y exige
-`variant="nest"` en `purchase`. Por eso la ficha se deriva del `init` y del HAR, no
-de una tabla fija.
+Pirots 5 (`10266`, RTP 96 %) usa la misma estructura pero **`X05 = 250x`** y declara
+cuatro variantes (`boss`, `nest`, `ship`, `temple`) que hay que mandar como
+`variant` en `purchase`. Por eso la ficha se deriva del `init` y del HAR, no de una
+tabla fija.
+
+### Dos reglas que cuestan un errorcode=1
+
+Las aprendimos midiendo los 158 juegos, no leyendo documentación:
+
+1. **`bmode` solo si `init` lo declara.** El shell real (`ecf2`/`ecf3`, build
+   369146) monta `purchase` así:
+
+   ```text
+   this.bb ? <request … bmode="DEF" …/> : <request … />   // this.bb = betlevels bmode="true"
+   ```
+
+   En los 42 juegos sin feature buys (`betlevels bmode="false"`, gameId 10007–10139)
+   mandar `bmode="DEF"` devuelve `errorcode=1 General technical error` y, además,
+   **puede descontar la apuesta sin abrir ronda**. El adaptador omite el atributo
+   cuando el juego no lo declara.
+
+2. **`variant` solo si `init` declara `<variants>`.** Solo 4 juegos (6 slugs) lo
+   hacen: Pirots 4 / Inferno / Frozen Fury (`fire, ice, space`), Pirots 5
+   (`boss, nest, ship, temple`), Wild Toro 3 (`day, night`) y Huff N Puff Collectr
+   (`garden, springbreak`). Sin `variant`, `purchase` da `errorcode=1`. Las
+   variantes sin paytable (cero `<SYMBOL>`) no son jugables —`boss` de Pirots 5— y
+   también descuentan saldo al rechazarlas: el adaptador elige la primera jugable y
+   valida la que le pases.
+
+   ```text
+   elk_init  gameId="10266"                 -> declared.variants = boss, nest, ship, temple
+   elk_spin  betlevel=4                     -> usa nest (primera jugable)
+   elk_spin  betlevel=4 variant="temple"    -> fija temple para la sesión
+   ```
 
 ### Contabilidad y replay
 
@@ -155,7 +186,7 @@ elk_call op="sessionupdate"             -> contrato crudo para lo que falte
 Para un juego con variante:
 
 ```text
-elk_init gameId="10266" variant="nest"
+elk_init gameId="10266" variant="nest"    # opcional: fija la variante de la sesión
 ```
 
 `elk_card` devuelve la **ficha de capacidad** (BSF): transporte, cabeceras, ops,
@@ -167,6 +198,33 @@ elk-capi-v2|betlevels=12|bmodes=DEF,X01,X02,X03,X04,X05|rtp=0.94|maxwin=1000000|
 ```
 
 Los 158 juegos Elk del catálogo comparten ese contrato: un adaptador, no 158.
+
+### Cobertura medida (`scripts/elk-catalog-sweep.mjs`)
+
+El script mapea `slug -> gameid` con **un solo GET** al listado público de ELK
+(158 tarjetas, evita los `429` del WordPress) y luego hace `init`; con `--spin`
+hace además **un giro `DEF` de 0.20** por juego, lo cierra con `checkwin` y
+valida la contabilidad ronda a ronda.
+
+```text
+node scripts/elk-catalog-sweep.mjs                    # contrato: 158 inits, ~16 s
+node scripts/elk-catalog-sweep.mjs --spin             # + un giro por juego, ~88 s
+node scripts/elk-catalog-sweep.mjs --spin --limit=6   # muestra
+```
+
+Resultado con el adaptador actual:
+
+```text
+init ok              158/158
+giros ok + validados 158/158    descuadres 0
+apostado 31.20 EUR   ganado 20.94 EUR (1 giro/juego, sin valor estadístico)
+bmodes: 113 DEF+X01..X05 | 42 solo DEF | 2 DEF+BB1+BB2 | 1 DEF+BB1..BB4
+variantes: pirots-4, pirots-5, wild-toro-3, huff-n-puff-collectr
+rtp 0.94–0.964 | 12 betlevels | default 4 | minspindelay 1200 | MGA
+```
+
+El JSON completo (contrato + resultado del giro por juego) queda en
+`.slots-artifacts/elk-sweep.json`.
 
 ---
 

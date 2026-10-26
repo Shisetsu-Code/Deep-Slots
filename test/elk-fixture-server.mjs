@@ -5,8 +5,33 @@ import http from "node:http";
 const GAME_ID = "99999";
 const SESSION = "TESTSESSION00000000000000000001";
 
+function variantsXml(variants) {
+  if (!variants || variants.length === 0) return "";
+  const blocks = variants
+    .map((variant) => {
+      // `SYMBOL-GROUPS` no debe contar como simbolo: el parser exige `<SYMBOL ... id=`.
+      const symbols = Array.from(
+        { length: variant.symbols ?? 0 },
+        (_, index) => `<SYMBOL id="${index}" type="normal" values="0,1,2"/>`,
+      ).join("");
+      return `<variant id="${variant.id}"><game><paytable><![CDATA[<SETUP gameid="${GAME_ID}" maxwin="1000" protocol-version="2" variant="${variant.id}">${symbols}<SYMBOL-GROUPS count="1"/></SETUP>]]></paytable></game></variant>`;
+    })
+    .join("");
+  return `<variants><pubstate><init><![CDATA[<VARS></VARS>]]></init></pubstate>${blocks}</variants>`;
+}
+
 function initXml(state) {
-  return `<response><method>init</method><errorcode>0</errorcode><gamesession><id>${SESSION}</id><totbet>0.00</totbet><totwon>0.00</totwon><netposition>0.00</netposition><onetimetoken>false</onetimetoken><minspindelay>0</minspindelay><regulateminbetlevel>false</regulateminbetlevel></gamesession><servertime>1700000000</servertime><roundid>0</roundid><player><playerhash>deadbeefdeadbeefdeadbeefdeadbeef</playerhash><currency>EUR</currency><balance>${state.balance.toFixed(2)}</balance></player><currencydetails><rightsidesign>false</rightsidesign><currencysymbol>€</currencysymbol><thousandseparator>,</thousandseparator><decimalseparator>.</decimalseparator></currencydetails><betlevels maxwin="1000" default="1" rtp="0.940000" hf="0.250000" cpbb="100" bmode="true"><betlevel id="1"><bmodes><bmode id="DEF" amount="1.00" maxwinamount="1000" coinvalue="0.01000" autospin="true"></bmode><bmode id="X01" amount="3.00" maxwinamount="1000" coinvalue="0.01000" autospin="true"></bmode></bmodes></betlevel><betlevel id="2"><bmodes><bmode id="DEF" amount="2.00" maxwinamount="2000" coinvalue="0.02000" autospin="true"></bmode><bmode id="X01" amount="6.00" maxwinamount="2000" coinvalue="0.02000" autospin="true"></bmode></bmodes></betlevel></betlevels><gameprops><bmode enabled="true"></bmode><jackpot enabled="false"></jackpot><rtpdisplay>94.0%</rtpdisplay><multiplierdisplay>1 000x</multiplierdisplay><bmodemultipliers><bmode id="DEF" display="1x"></bmode><bmode id="X01" display="3x"></bmode></bmodemultipliers></gameprops><papi><url>https://papi.example.invalid</url></papi><jurisdiction><intjur>MGA</intjur><features><spin><mindelay>0</mindelay></spin><autospin><enabled>true</enabled><value>10,25</value></autospin><quickplay><enabled>true</enabled></quickplay><realitycheck><enabled>true</enabled></realitycheck><buybonus><enabled>true</enabled></buybonus></features></jurisdiction></response>`;
+  const bmodeEnabled = state.bmodeEnabled;
+  const extraMode = bmodeEnabled
+    ? `<bmode id="X01" amount="${(state.betAmount * 3).toFixed(2)}" maxwinamount="1000" coinvalue="0.01000" autospin="true"></bmode>`
+    : "";
+  return `<response><method>init</method><errorcode>0</errorcode><gamesession><id>${SESSION}</id><totbet>0.00</totbet><totwon>0.00</totwon><netposition>0.00</netposition><onetimetoken>false</onetimetoken><minspindelay>0</minspindelay><regulateminbetlevel>false</regulateminbetlevel></gamesession><servertime>1700000000</servertime><roundid>0</roundid><player><playerhash>deadbeefdeadbeefdeadbeefdeadbeef</playerhash><currency>EUR</currency><balance>${state.balance.toFixed(2)}</balance></player><currencydetails><rightsidesign>false</rightsidesign><currencysymbol>€</currencysymbol><thousandseparator>,</thousandseparator><decimalseparator>.</decimalseparator></currencydetails><betlevels maxwin="1000" default="1" rtp="0.940000" hf="0.250000" cpbb="100" bmode="${bmodeEnabled}"><betlevel id="1"><bmodes><bmode id="DEF" amount="${state.betAmount.toFixed(2)}" maxwinamount="1000" coinvalue="0.01000" autospin="true"></bmode>${extraMode}</bmodes></betlevel><betlevel id="2"><bmodes><bmode id="DEF" amount="${(state.betAmount * 2).toFixed(2)}" maxwinamount="2000" coinvalue="0.02000" autospin="true"></bmode>${
+    bmodeEnabled
+      ? `<bmode id="X01" amount="${(state.betAmount * 6).toFixed(2)}" maxwinamount="2000" coinvalue="0.02000" autospin="true"></bmode>`
+      : ""
+  }</bmodes></betlevel></betlevels><gameprops><bmode enabled="${bmodeEnabled}"></bmode><jackpot enabled="false"></jackpot><rtpdisplay>94.0%</rtpdisplay><multiplierdisplay>1 000x</multiplierdisplay><bmodemultipliers>${
+    bmodeEnabled ? '<bmode id="DEF" display="1x"></bmode><bmode id="X01" display="3x"></bmode>' : ""
+  }</bmodemultipliers></gameprops><papi><url>https://papi.example.invalid</url></papi><jurisdiction><intjur>MGA</intjur><features><spin><mindelay>0</mindelay></spin><autospin><enabled>true</enabled><value>10,25</value></autospin><quickplay><enabled>true</enabled></quickplay><realitycheck><enabled>true</enabled></realitycheck><buybonus><enabled>${bmodeEnabled}</enabled></buybonus></features></jurisdiction>${variantsXml(state.variants)}</response>`;
 }
 
 function roundXml(state, round) {
@@ -31,6 +56,9 @@ export function startFixture(options = {}) {
     calls: [],
     corruptCredit: options.corruptCredit ?? 0,
     failInit: options.failInit ?? false,
+    bmodeEnabled: options.bmodeEnabled ?? true,
+    betAmount: options.betAmount ?? 1,
+    variants: options.variants ?? [],
   };
 
   const server = http.createServer((req, res) => {

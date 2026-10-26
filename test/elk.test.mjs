@@ -6,6 +6,7 @@ import path from "node:path";
 import { buildRequest, parseXml, xmlAttr } from "../dist/elk/xml.js";
 import { ElkGameSession } from "../dist/elk/session.js";
 import { redactSession } from "../dist/elk/client.js";
+import { elkFamilyKey, parseInit } from "../dist/elk/types.js";
 import { loadHar } from "../dist/har/loader.js";
 import { summarizeHar, opOf } from "../dist/har/summary.js";
 import { buildElkCard } from "../dist/har/elk-card.js";
@@ -212,6 +213,84 @@ function miniHar() {
     },
   };
 }
+
+test("elk: juego sin feature buys declara solo DEF", () => {
+  const root = parseXml(
+    '<response><method>init</method><errorcode>0</errorcode><gamesession><id>S</id><minspindelay>1200</minspindelay></gamesession><player><currency>EUR</currency><balance>5000.00</balance></player><betlevels maxwin="500000" default="4" rtp="0.961000" hf="0.229000" cpbb="100" bmode="false"><betlevel id="1"><bmodes><bmode id="DEF" amount="0.20" maxwinamount="1000.00" coinvalue="0.00200" autospin="true"></bmode></bmodes></betlevel><betlevel id="4"><bmodes><bmode id="DEF" amount="1.00" maxwinamount="5000.00" coinvalue="0.01000" autospin="true"></bmode></bmodes></betlevel></betlevels><gameprops><bmode enabled="false"></bmode><bmodemultipliers></bmodemultipliers></gameprops><jurisdiction><intjur>MGA</intjur></jurisdiction></response>',
+  );
+  const info = parseInit(root);
+  assert.deepEqual(info.betModes, ["DEF"]);
+  assert.deepEqual(info.bmodes, []);
+  assert.equal(info.bmodeEnabled, false);
+  assert.equal(info.betlevels.length, 2);
+  assert.equal(info.betlevels[1].bmodes[0].amount, 1);
+
+  const key = elkFamilyKey(
+    { rtp: info.rtp, maxwin: info.maxwin, betlevels: info.betlevels.length, bmodes: info.betModes, features: info.features },
+    null,
+  );
+  assert.match(key, /\|bmodes=DEF\|/);
+});
+
+test("elk: feature buys con ids BBx tambien entran en la clave de familia", () => {
+  const root = parseXml(
+    '<response><method>init</method><errorcode>0</errorcode><player><currency>EUR</currency><balance>100.00</balance></player><betlevels maxwin="500000" default="4" rtp="0.958" bmode="true"><betlevel id="1"><bmodes><bmode id="DEF" amount="0.20"></bmode><bmode id="BB1" amount="0.60"></bmode><bmode id="BB2" amount="2.00"></bmode></bmodes></betlevel></betlevels><gameprops><bmodemultipliers><bmode id="DEF" display="1x"></bmode><bmode id="BB1" display="3x"></bmode><bmode id="BB2" display="10x"></bmode></bmodemultipliers></gameprops></response>',
+  );
+  const info = parseInit(root);
+  assert.deepEqual(info.betModes, ["DEF", "BB1", "BB2"]);
+  assert.deepEqual(info.bmodes.map((b) => b.multiplier), [1, 3, 10]);
+});
+
+test("elk: sin bmode declarado no se manda bmode en purchase", async () => {
+  const fixture = await startFixture({ bmodeEnabled: false, betAmount: 0.2 });
+  try {
+    const session = makeSession(fixture);
+    const info = await session.initialize();
+    assert.equal(info.bmodeEnabled, false);
+    assert.deepEqual(info.betModes, ["DEF"]);
+    assert.deepEqual(info.variants, []);
+
+    const outcome = await session.spin();
+    assert.equal(outcome.ok, true);
+    const purchase = fixture.state.calls.find((call) => call.op === "purchase");
+    assert.ok(purchase, "hubo purchase");
+    assert.doesNotMatch(purchase.body, /bmode=/, "no debe mandar bmode");
+    assert.match(purchase.body, /betlevel="1"/);
+    assert.match(purchase.body, /amount="0.20"/);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("elk: variantes — descarta la no jugable y manda la primera con paytable", async () => {
+  const fixture = await startFixture({
+    variants: [
+      { id: "boss", symbols: 0 },
+      { id: "nest", symbols: 5 },
+      { id: "temple", symbols: 4 },
+    ],
+  });
+  try {
+    const session = makeSession(fixture);
+    const info = await session.initialize();
+    assert.deepEqual(
+      info.variants.map((variant) => `${variant.id}:${variant.playable}`),
+      ["boss:false", "nest:true", "temple:true"],
+    );
+    assert.equal(session.resolveVariant(), "nest");
+    assert.throws(() => session.resolveVariant("boss"), /no es jugable/);
+    assert.throws(() => session.resolveVariant("pirata"), /no existe en este juego/);
+
+    const outcome = await session.spin();
+    assert.equal(outcome.ok, true);
+    assert.equal(outcome.round.variant, "nest");
+    const purchase = fixture.state.calls.find((call) => call.op === "purchase");
+    assert.match(purchase.body, /variant="nest"/);
+    assert.match(purchase.body, /bmode="DEF"/, "con bmode declarado si se manda");
+  } finally {
+    await fixture.close();
+  }
+});
 
 test("har: loader decodifica base64, resume y deriva ficha Elk", () => {
   const file = path.join(os.tmpdir(), `deep-slots-mini-${process.pid}.har`);

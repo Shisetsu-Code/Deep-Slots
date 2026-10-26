@@ -29,6 +29,8 @@ export type ElkBetChoice = {
 export type ElkSpinOptions = {
   betlevel?: number;
   bmode?: string;
+  /** Variante del juego (solo si `init` declara `<variants>`). */
+  variant?: string;
   /** Cerrar la ronda con `checkwin` y validar el saldo final. */
   settle?: boolean;
   pmode?: string;
@@ -153,6 +155,35 @@ export class ElkGameSession {
     };
   }
 
+  /**
+   * Variante a mandar en `purchase`. Solo la exigen los juegos que declaran
+   * `<variants>` en `init` (Pirots 4/5, Wild Toro 3, Huff N Puff Collectr):
+   * sin ella el capi responde errorcode=1. Se descartan las variantes sin
+   * paytable (`boss` de Pirots 5): el capi las rechaza y ademas descuenta saldo.
+   */
+  resolveVariant(preferred?: string): string | null {
+    const declared = this.info?.variants ?? [];
+    const ids = declared.map((variant) => variant.id);
+    const wanted = preferred ?? this.variant ?? null;
+    if (wanted) {
+      if (ids.length > 0 && !ids.includes(wanted)) {
+        throw new Error(`variant "${wanted}" no existe en este juego. Validas: ${ids.join(", ")}`);
+      }
+      const entry = declared.find((variant) => variant.id === wanted);
+      if (entry && !entry.playable) {
+        throw new Error(
+          `variant "${wanted}" no es jugable (su paytable no declara simbolos). Jugables: ${declared
+            .filter((variant) => variant.playable)
+            .map((variant) => variant.id)
+            .join(", ")}`,
+        );
+      }
+      return wanted;
+    }
+    const playable = declared.filter((variant) => variant.playable);
+    return (playable[0] ?? declared[0])?.id ?? null;
+  }
+
   /** Respeta `minspindelay` contado desde el fin de la llamada anterior. */
   private async waitForPacing(extraDelayMs = 0): Promise<void> {
     const target = this.minSpindelay + Math.max(0, extraDelayMs);
@@ -177,13 +208,16 @@ export class ElkGameSession {
     await this.waitForPacing(options.extraDelayMs);
     const before = this.balance;
     const started = Date.now();
+    const variant = this.resolveVariant(options.variant);
     const result = await this.client.purchase({
       gamesession: this.info.gamesession,
       amount: choice.amount,
       betlevel: choice.betlevel,
-      bmode: choice.bmode,
+      // El shell real solo manda `bmode` cuando `init` lo declara (betlevels
+      // bmode="true"). Mandarlo a un juego DEF-only devuelve errorcode=1.
+      bmode: this.info.bmodeEnabled || choice.bmode !== DEFAULT_BMODE ? choice.bmode : undefined,
       gamespeed: options.gamespeed === "quick" ? "quick" : "normal",
-      variant: this.variant ?? undefined,
+      variant: variant ?? undefined,
       extra: options.extra,
     });
     this.calls.push(result);
@@ -191,15 +225,20 @@ export class ElkGameSession {
     this.lastActivityAt = Date.now();
 
     if (result.errorcode !== 0) {
+      const variants = this.info.variants;
       const hint =
-        !this.variant && result.errorcode === 1
-          ? " (si el juego declara variant, pasalo a elk_init; Pirots 5 usa variant='nest')"
+        result.errorcode === 1 && variants.length
+          ? ` (variantes jugables: ${variants
+              .filter((entry) => entry.playable)
+              .map((entry) => entry.id)
+              .join(", ")}; pasa variant= a elk_spin)`
           : "";
       const round: ElkRound = {
         index: this.rounds.length + 1,
         roundid: "",
         betlevel: choice.betlevel,
         bmode: choice.bmode,
+        variant,
         betamount: choice.amount,
         winamount: 0,
         balanceBefore: before,
@@ -226,6 +265,7 @@ export class ElkGameSession {
       roundid: purchase.roundid,
       betlevel: purchase.betlevel || choice.betlevel,
       bmode: purchase.bmode || choice.bmode,
+      variant,
       betamount: purchase.betamount || choice.amount,
       winamount: purchase.winamount,
       balanceBefore: before,
@@ -263,10 +303,20 @@ export class ElkGameSession {
     if (target.settled) return { ok: target.errors.length === 0, balance: this.balance, round: target, error: target.errors[0] ?? null };
 
     await this.waitForPacing();
-    const result = await this.client.checkwin(this.info.gamesession, target.roundid);
+    let result = await this.client.checkwin(this.info.gamesession, target.roundid);
     this.calls.push(result);
     this.lastCallEndedAt = Date.now();
     this.lastActivityAt = Date.now();
+
+    // `checkwin` es idempotente: el capi demo devuelve errorcode=1 de forma
+    // esporadica bajo carga aunque la ronda sea valida.
+    for (let attempt = 0; result.errorcode === 1 && attempt < 2; attempt++) {
+      await this.waitForPacing(900);
+      result = await this.client.checkwin(this.info.gamesession, target.roundid);
+      this.calls.push(result);
+      this.lastCallEndedAt = Date.now();
+      this.lastActivityAt = Date.now();
+    }
 
     if (result.errorcode !== 0) {
       target.errors.push(`checkwin errorcode=${result.errorcode}: ${result.error ?? ""}`);
@@ -312,6 +362,7 @@ export class ElkGameSession {
       spins: number;
       betlevel?: number;
       bmode?: string;
+      variant?: string;
       settle?: boolean;
       extraDelayMs?: number;
       stopOnMismatch?: boolean;
@@ -337,6 +388,7 @@ export class ElkGameSession {
         outcome = await this.spin({
           betlevel: options.betlevel,
           bmode: options.bmode,
+          variant: options.variant,
           settle: options.settle,
           extraDelayMs: options.extraDelayMs,
         });
@@ -448,6 +500,7 @@ export class ElkGameSession {
       defaultBetLevel: this.info?.defaultBetLevel ?? null,
       bmodeEnabled: this.info?.bmodeEnabled ?? null,
       bmodes: this.info?.bmodes ?? [],
+      variants: this.info?.variants ?? [],
       rtpDeclared: this.info?.rtp ?? null,
       maxwin: this.info?.maxwin ?? null,
       hf: this.info?.hf ?? null,
@@ -477,7 +530,7 @@ export class ElkGameSession {
         rtp: info.rtp,
         maxwin: info.maxwin,
         betlevels: info.betlevels.length,
-        bmodes: info.bmodes.map((bmode) => bmode.id),
+        bmodes: info.betModes,
         features: info.features,
       } : null, this.variant),
       transport: {
@@ -506,7 +559,10 @@ export class ElkGameSession {
             jurisdiction: info.jurisdiction,
             papi: info.papi,
             betlevels: info.betlevels.length,
+            betModes: info.betModes,
+            featureBuys: info.betModes.filter((id) => id !== "DEF"),
             bmodes: info.bmodes,
+            variants: info.variants,
             features: info.features,
           }
         : null,

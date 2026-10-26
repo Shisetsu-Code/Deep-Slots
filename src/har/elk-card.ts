@@ -45,6 +45,8 @@ export type HarElkGame = {
     minspindelay: number | null;
     betlevels: number;
     bmodes: Array<{ id: string; display: string; multiplier: number | null }>;
+    betModes: string[];
+    featureBuys: string[];
     features: Record<string, unknown>;
     papi: string | null;
   } | null;
@@ -228,7 +230,7 @@ function finalize(game: MutableGame): HarElkGame {
             rtp: initInfo.rtp,
             maxwin: initInfo.maxwin,
             betlevels: initInfo.betlevels.length,
-            bmodes: initInfo.bmodes.map((bmode) => bmode.id),
+            bmodes: initInfo.betModes,
             features: initInfo.features,
           }
         : null,
@@ -243,6 +245,8 @@ function finalize(game: MutableGame): HarElkGame {
           minspindelay: initInfo.minspindelay,
           betlevels: initInfo.betlevels.length,
           bmodes: initInfo.bmodes,
+          betModes: initInfo.betModes,
+          featureBuys: initInfo.betModes.filter((id) => id !== "DEF"),
           features: initInfo.features,
           papi: initInfo.papi,
         }

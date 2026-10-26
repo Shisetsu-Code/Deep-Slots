@@ -20,6 +20,19 @@ export type ElkBmodeDisplay = {
   multiplier: number | null;
 };
 
+export type ElkGameVariant = {
+  id: string;
+  /** `maxwin` declarado en el `<SETUP variant="...">` de esa variante. */
+  maxwin: number | null;
+  /** `revision` del SETUP (cambia entre builds del motor). */
+  revision: string | null;
+  /** Simbolos del paytable de esa variante. 0 = no jugable (ej. boss de Pirots 5). */
+  symbols: number;
+  /** false en variantes de estado interno: `purchase` las rechaza con errorcode=1. */
+  playable: boolean;
+};
+
+
 export type ElkInitInfo = {
   gamesession: string;
   currency: string;
@@ -35,7 +48,20 @@ export type ElkInitInfo = {
   cpbb: string | null;
   bmodeEnabled: boolean;
   betlevels: ElkBetLevel[];
+  /**
+   * bmodes que el juego vende de verdad (union de los declarados en cada
+   * betlevel). Es la fuente fiable: `gameprops.bmodemultipliers` viene vacio en
+   * los juegos sin feature buys, aunque sigan aceptando DEF.
+   */
+  betModes: string[];
+  /** Tabla de multiplicadores de `gameprops` (puede estar vacia). */
   bmodes: ElkBmodeDisplay[];
+  /**
+   * Variantes declaradas por `init` (`<variants><variant id="...">`). Los juegos
+   * con varias (Pirots 4/5, Wild Toro 3, Huff N Puff Collectr) exigen mandar
+   * `variant` en `purchase`; sin el devuelven errorcode=1.
+   */
+  variants: ElkGameVariant[];
   gameprops: Record<string, string>;
   jurisdiction: string | null;
   features: Record<string, unknown>;
@@ -67,6 +93,8 @@ export type ElkRound = {
   roundid: string;
   betlevel: number;
   bmode: string;
+  /** Variante usada en `purchase` (solo juegos multi-variante). */
+  variant: string | null;
   betamount: number;
   winamount: number;
   balanceBefore: number | null;
@@ -140,6 +168,27 @@ export function parseInit(root: XmlNode): ElkInitInfo {
     };
   });
 
+  const betModes = [...new Set(betlevels.flatMap((level) => level.bmodes.map((bmode) => bmode.id)))].sort(
+    (a, b) => (a === "DEF" ? -1 : b === "DEF" ? 1 : a.localeCompare(b)),
+  );
+
+  const variantsNode = isNode(body.variants) ? body.variants : {};
+  const variants: ElkGameVariant[] = listOf((variantsNode as XmlNode).variant as XmlNode | XmlNode[] | undefined)
+    .map((variant) => {
+      const setupXml = xmlText(collectByTag(variant, "paytable")[0]) ?? "";
+      const setup = /<SETUP\b([^>]*)>/i.exec(setupXml)?.[1] ?? "";
+      const attr = (name: string) => new RegExp(`\\b${name}\\s*=\\s*"([^"]*)"`, "i").exec(setup)?.[1] ?? null;
+      const symbols = (setupXml.match(/<SYMBOL\s[^>]*\bid=/gi) ?? []).length;
+      return {
+        id: String(xmlAttr(variant, "id") ?? attr("variant") ?? ""),
+        maxwin: attr("maxwin") != null ? Number(attr("maxwin")) : null,
+        revision: attr("revision"),
+        symbols,
+        playable: symbols > 0,
+      };
+    })
+    .filter((variant) => variant.id !== "");
+
   return {
     gamesession: String(xmlAttr(session, "id") ?? ""),
     currency: String(xmlText(player.currency) ?? "EUR"),
@@ -155,7 +204,9 @@ export function parseInit(root: XmlNode): ElkInitInfo {
     cpbb: xmlAttr(betlevelsNode, "cpbb"),
     bmodeEnabled: xmlBool(betlevelsNode, "bmode") ?? false,
     betlevels,
+    betModes,
     bmodes,
+    variants,
     gameprops: Object.fromEntries(
       Object.entries(gameprops)
         .filter(([k, v]) => !k.startsWith("@") && k !== "__cdata" && !isNode(v))
