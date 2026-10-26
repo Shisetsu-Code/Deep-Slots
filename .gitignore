@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.slots-artifacts/
+*.log
+
+# Datos de sesion y capturas: nunca se publican.
+*.har
+*.har.gz
+data/
+*.sqlite3
+coords.json
+bsf*.txt
+pb-*.txt
+*.session.json

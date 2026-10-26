@@ -1,0 +1,65 @@
+{
+  "url": "",
+  "browser": {
+    "channel": null,
+    "headless": true,
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "locale": "es-ES"
+  },
+  "selectors": {
+    "spin": "",
+    "betIncrease": "",
+    "betDecrease": "",
+    "bet": "",
+    "balance": "",
+    "win": "",
+    "canvas": "#GameCanvas"
+  },
+  "labels": {
+    "spin": [
+      "spin",
+      "girar",
+      "jugar",
+      "play",
+      "start",
+      "tirar"
+    ],
+    "betIncrease": [
+      "+",
+      "increase bet",
+      "subir apuesta",
+      "aumentar apuesta",
+      "max bet",
+      "apuesta max"
+    ],
+    "betDecrease": [
+      "-",
+      "decrease bet",
+      "bajar apuesta",
+      "disminuir apuesta"
+    ]
+  },
+  "network": {
+    "spinEndpoint": "/spr-golf-drive/v4/Spin"
+  },
+  "spin": {
+    "settleMs": 400,
+    "timeoutMs": 12000,
+    "waitForNetwork": true
+  },
+  "elk": {
+    "origin": "https://gc5-stage.contentmedia.eu",
+    "operatorId": "44",
+    "currency": "EUR",
+    "locale": "en_gb",
+    "gameId": "",
+    "timeoutMs": 20000,
+    "retries": 2,
+    "clientVersion": "263580",
+    "ecfVersion": "369146"
+  },
+  "artifactsDir": ".slots-artifacts"
+}
